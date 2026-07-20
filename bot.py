@@ -17,6 +17,8 @@ def get_conn():
         chat_id INTEGER, ticker TEXT, percent REAL)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS sec_seen (
         ticker TEXT PRIMARY KEY, accession TEXT)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS user_settings (
+        chat_id INTEGER PRIMARY KEY, default_pct REAL)""")
     return conn
 
 _CIK_CACHE = {}
@@ -102,6 +104,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/alert TICKER above PRICE - alert when price rises above\n"
         "/alert TICKER below PRICE - alert when price falls below\n"
         "/pctalert TICKER PERCENT - alert on a daily move of that size, e.g. /pctalert EDBL 5\n"
+        "/pctalertall PERCENT - apply that alert to your whole watchlist, and to every ticker you add from now on\n"
         "/alerts - show your active alerts\n"
         "/price TICKER - check a price on demand\n"
         "/news TICKER - latest headlines for a stock\n"
@@ -125,6 +128,33 @@ async def pctalert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
     await update.message.reply_text(f"Alert set: {ticker} moves \u00b1{percent}% in a day")
+
+async def pctalertall(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /pctalertall PERCENT   e.g. /pctalertall 5")
+        return
+    try:
+        percent = abs(float(context.args[0]))
+    except ValueError:
+        await update.message.reply_text("Percent must be a number, e.g. /pctalertall 5")
+        return
+    chat_id = update.effective_chat.id
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO user_settings (chat_id, default_pct) VALUES (?, ?) "
+        "ON CONFLICT(chat_id) DO UPDATE SET default_pct=excluded.default_pct",
+        (chat_id, percent),
+    )
+    tickers = conn.execute("SELECT ticker FROM watchlist WHERE chat_id=?", (chat_id,)).fetchall()
+    for (ticker,) in tickers:
+        conn.execute("DELETE FROM pct_alerts WHERE chat_id=? AND ticker=?", (chat_id, ticker))
+        conn.execute("INSERT INTO pct_alerts VALUES (?, ?, ?)", (chat_id, ticker, percent))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(
+        f"Set \u00b1{percent}% alerts on all {len(tickers)} watchlist tickers. "
+        f"New tickers you /watch from now on will get this automatically too."
+    )
 
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -166,7 +196,18 @@ async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         conn.execute("INSERT INTO watchlist VALUES (?, ?)", (chat_id, ticker))
         conn.commit()
-        await update.message.reply_text(f"Added {ticker} to your watchlist.")
+        default = conn.execute(
+            "SELECT default_pct FROM user_settings WHERE chat_id=?", (chat_id,)
+        ).fetchone()
+        if default:
+            conn.execute("DELETE FROM pct_alerts WHERE chat_id=? AND ticker=?", (chat_id, ticker))
+            conn.execute("INSERT INTO pct_alerts VALUES (?, ?, ?)", (chat_id, ticker, default[0]))
+            conn.commit()
+            await update.message.reply_text(
+                f"Added {ticker} to your watchlist with a \u00b1{default[0]}% alert."
+            )
+        else:
+            await update.message.reply_text(f"Added {ticker} to your watchlist.")
     conn.close()
 
 async def unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -314,6 +355,7 @@ app.add_handler(CommandHandler("unwatch", unwatch))
 app.add_handler(CommandHandler("list", list_watchlist))
 app.add_handler(CommandHandler("alert", alert))
 app.add_handler(CommandHandler("pctalert", pctalert))
+app.add_handler(CommandHandler("pctalertall", pctalertall))
 app.add_handler(CommandHandler("alerts", list_alerts))
 app.add_handler(CommandHandler("news", news))
 
