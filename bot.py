@@ -20,6 +20,20 @@ def get_price(ticker: str):
         return None
     return round(data['Close'].iloc[-1], 2)
 
+def get_news(ticker: str, limit: int = 3):
+    try:
+        items = yf.Ticker(ticker).news or []
+    except Exception:
+        return []
+    headlines = []
+    for item in items[:limit]:
+        content = item.get("content", item)
+        title = content.get("title") or item.get("title")
+        link = (content.get("canonicalUrl") or {}).get("url") or item.get("link")
+        if title:
+            headlines.append((title, link))
+    return headlines
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Commands:\n"
@@ -29,8 +43,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/alert TICKER above PRICE - alert when price rises above\n"
         "/alert TICKER below PRICE - alert when price falls below\n"
         "/alerts - show your active alerts\n"
-        "/price TICKER - check a price on demand"
+        "/price TICKER - check a price on demand\n"
+        "/news TICKER - latest headlines for a stock"
     )
+
+async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /news TICKER")
+        return
+    ticker = context.args[0].upper()
+    headlines = get_news(ticker)
+    if not headlines:
+        await update.message.reply_text(f"No recent news found for {ticker}")
+        return
+    lines = [f"{ticker} news:"]
+    for title, link in headlines:
+        lines.append(f"- {title}\n{link}" if link else f"- {title}")
+    await update.message.reply_text("\n".join(lines), disable_web_page_preview=True)
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -144,7 +173,11 @@ async def send_watchlist_updates(context: ContextTypes.DEFAULT_TYPE):
         lines = []
         for (ticker,) in rows:
             p = get_price(ticker)
-            lines.append(f"{ticker}: ${p}" if p is not None else f"{ticker}: unavailable")
+            line = f"{ticker}: ${p}" if p is not None else f"{ticker}: unavailable"
+            headlines = get_news(ticker, limit=1)
+            if headlines:
+                line += f"\n  📰 {headlines[0][0]}"
+            lines.append(line)
         if lines:
             await context.bot.send_message(chat_id=chat_id, text="Watchlist update:\n" + "\n".join(lines))
     conn.close()
@@ -157,6 +190,7 @@ app.add_handler(CommandHandler("unwatch", unwatch))
 app.add_handler(CommandHandler("list", list_watchlist))
 app.add_handler(CommandHandler("alert", alert))
 app.add_handler(CommandHandler("alerts", list_alerts))
+app.add_handler(CommandHandler("news", news))
 
 app.job_queue.run_repeating(check_alerts, interval=300, first=10)
 app.job_queue.run_repeating(send_watchlist_updates, interval=3600, first=30)
