@@ -183,32 +183,36 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: /watch TICKER")
+        await update.message.reply_text("Usage: /watch TICKER [TICKER2 TICKER3 ...]")
         return
-    ticker = context.args[0].upper()
     chat_id = update.effective_chat.id
     conn = get_conn()
-    existing = conn.execute(
-        "SELECT 1 FROM watchlist WHERE chat_id=? AND ticker=?", (chat_id, ticker)
+    default = conn.execute(
+        "SELECT default_pct FROM user_settings WHERE chat_id=?", (chat_id,)
     ).fetchone()
-    if existing:
-        await update.message.reply_text(f"{ticker} is already on your watchlist.")
-    else:
-        conn.execute("INSERT INTO watchlist VALUES (?, ?)", (chat_id, ticker))
-        conn.commit()
-        default = conn.execute(
-            "SELECT default_pct FROM user_settings WHERE chat_id=?", (chat_id,)
+    added, skipped = [], []
+    for raw in context.args:
+        ticker = raw.upper()
+        existing = conn.execute(
+            "SELECT 1 FROM watchlist WHERE chat_id=? AND ticker=?", (chat_id, ticker)
         ).fetchone()
+        if existing:
+            skipped.append(ticker)
+            continue
+        conn.execute("INSERT INTO watchlist VALUES (?, ?)", (chat_id, ticker))
         if default:
             conn.execute("DELETE FROM pct_alerts WHERE chat_id=? AND ticker=?", (chat_id, ticker))
             conn.execute("INSERT INTO pct_alerts VALUES (?, ?, ?)", (chat_id, ticker, default[0]))
-            conn.commit()
-            await update.message.reply_text(
-                f"Added {ticker} to your watchlist with a \u00b1{default[0]}% alert."
-            )
-        else:
-            await update.message.reply_text(f"Added {ticker} to your watchlist.")
+        added.append(ticker)
+    conn.commit()
     conn.close()
+    lines = []
+    if added:
+        suffix = f" with \u00b1{default[0]}% alerts" if default else ""
+        lines.append(f"Added: {', '.join(added)}{suffix}")
+    if skipped:
+        lines.append(f"Already watching: {', '.join(skipped)}")
+    await update.message.reply_text("\n".join(lines))
 
 async def unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
