@@ -2,6 +2,8 @@ import os
 import sqlite3
 import requests
 import yfinance as yf
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -290,6 +292,9 @@ async def check_alerts(context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
 async def send_watchlist_updates(context: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(ZoneInfo("America/New_York"))
+    if not (7 <= now.hour < 19):
+        return
     conn = get_conn()
     chat_ids = conn.execute("SELECT DISTINCT chat_id FROM watchlist").fetchall()
     for (chat_id,) in chat_ids:
@@ -366,6 +371,6 @@ app.add_handler(CommandHandler("news", news))
 app.job_queue.run_repeating(check_alerts, interval=300, first=10)
 app.job_queue.run_repeating(check_pct_alerts, interval=300, first=15)
 app.job_queue.run_repeating(check_sec_filings, interval=1800, first=20)
-app.job_queue.run_repeating(send_watchlist_updates, interval=3600, first=30)
+app.job_queue.run_repeating(send_watchlist_updates, interval=5400, first=30)
 
 app.run_polling()
