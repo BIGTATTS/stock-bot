@@ -7,7 +7,35 @@ from zoneinfo import ZoneInfo
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+import redis as redis_lib
+
 DB_PATH = os.path.join(os.environ.get("DATA_DIR", "."), "bot.db")
+
+try:
+    redis_client = redis_lib.from_url(os.environ["REDIS_URL"], decode_responses=True)
+    redis_client.ping()
+except Exception:
+    redis_client = None
+
+def send_heartbeat(bot_name: str):
+    if redis_client is None:
+        return
+    try:
+        redis_client.set(f"heartbeat:{bot_name}", datetime.now(ZoneInfo("UTC")).isoformat(), ex=600)
+    except Exception:
+        pass
+
+def get_all_heartbeats():
+    if redis_client is None:
+        return {}
+    result = {}
+    for name in ["stock-bot", "shortbot", "traderbot", "portfoliobot"]:
+        try:
+            val = redis_client.get(f"heartbeat:{name}")
+            result[name] = val
+        except Exception:
+            result[name] = None
+    return result
 
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
@@ -399,7 +427,24 @@ async def check_sec_filings(context: ContextTypes.DEFAULT_TYPE):
                     text=f"{flag}{ticker} filed a {f['form']} on {f['date']}\n{f['link']}"
                 )
     conn.close()
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    heartbeats = get_all_heartbeats()
+    now = datetime.now(ZoneInfo("UTC"))
+    lines = ["Bot status:"]
+    for name, val in heartbeats.items():
+        if not val:
+            lines.append(f"\u26aa {name}: no heartbeat seen")
+            continue
+        last_seen = datetime.fromisoformat(val)
+        age = (now - last_seen).total_seconds()
+        if age < 300:
+            lines.append(f"\U0001F7E2 {name}: online ({int(age)}s ago)")
+        else:
+            lines.append(f"\U0001F534 {name}: stale ({int(age // 60)}m ago)")
+    await update.message.reply_text("\n".join(lines))
 
+async def heartbeat_job(context: ContextTypes.DEFAULT_TYPE):
+    send_heartbeat("stock-bot")
 app = Application.builder().token(os.environ["BOT_TOKEN"]).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("price", price))
@@ -411,8 +456,10 @@ app.add_handler(CommandHandler("pctalert", pctalert))
 app.add_handler(CommandHandler("pctalertall", pctalertall))
 app.add_handler(CommandHandler("alerts", list_alerts))
 app.add_handler(CommandHandler("news", news))
+app.add_handler(CommandHandler("status", status))
 
 app.job_queue.run_repeating(check_alerts, interval=300, first=10)
+app.job_queue.run_repeating(heartbeat_job, interval=120, first=5)
 app.job_queue.run_repeating(check_pct_alerts, interval=300, first=15)
 app.job_queue.run_repeating(check_sec_filings, interval=1800, first=20)
 app.job_queue.run_repeating(check_volume_spikes, interval=1800, first=25)
