@@ -21,8 +21,9 @@ def get_conn():
         ticker TEXT PRIMARY KEY, accession TEXT)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS user_settings (
         chat_id INTEGER PRIMARY KEY, default_pct REAL)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS volume_alerted (
+        ticker TEXT PRIMARY KEY, last_date TEXT)""")
     return conn
-
 _CIK_CACHE = {}
 
 def get_cik(ticker: str):
@@ -82,6 +83,17 @@ def get_price(ticker: str):
     if data.empty:
         return None
     return round(data['Close'].iloc[-1], 2)
+
+def get_volume_spike(ticker: str):
+    data = yf.Ticker(ticker).history(period="20d")
+    if len(data) < 6:
+        return None
+    today_volume = data['Volume'].iloc[-1]
+    avg_volume = data['Volume'].iloc[:-1].mean()
+    if avg_volume == 0:
+        return None
+    ratio = round(today_volume / avg_volume, 1)
+    return ratio
 
 def get_news(ticker: str, limit: int = 3):
     try:
@@ -328,6 +340,31 @@ async def check_pct_alerts(context: ContextTypes.DEFAULT_TYPE):
             conn.commit()
     conn.close()
 
+async def check_volume_spikes(context: ContextTypes.DEFAULT_TYPE):
+    today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    conn = get_conn()
+    tickers = conn.execute("SELECT DISTINCT ticker FROM watchlist").fetchall()
+    for (ticker,) in tickers:
+        ratio = get_volume_spike(ticker)
+        if ratio is None or ratio < 3:
+            continue
+        seen = conn.execute("SELECT last_date FROM volume_alerted WHERE ticker=?", (ticker,)).fetchone()
+        if seen and seen[0] == today:
+            continue
+        conn.execute(
+            "INSERT INTO volume_alerted (ticker, last_date) VALUES (?, ?) "
+            "ON CONFLICT(ticker) DO UPDATE SET last_date=excluded.last_date",
+            (ticker, today),
+        )
+        conn.commit()
+        chat_ids = conn.execute("SELECT chat_id FROM watchlist WHERE ticker=?", (ticker,)).fetchall()
+        for (chat_id,) in chat_ids:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"\U0001F4CA Volume alert: {ticker} is trading at {ratio}x its 20-day average volume"
+            )
+    conn.close()
+
 async def check_sec_filings(context: ContextTypes.DEFAULT_TYPE):
     conn = get_conn()
     tickers = conn.execute("SELECT DISTINCT ticker FROM watchlist").fetchall()
@@ -371,6 +408,7 @@ app.add_handler(CommandHandler("news", news))
 app.job_queue.run_repeating(check_alerts, interval=300, first=10)
 app.job_queue.run_repeating(check_pct_alerts, interval=300, first=15)
 app.job_queue.run_repeating(check_sec_filings, interval=1800, first=20)
+app.job_queue.run_repeating(check_volume_spikes, interval=1800, first=25)
 for hour in [8, 13, 15, 17]:
     app.job_queue.run_daily(send_watchlist_updates, time=dtime(hour=hour, tzinfo=ZoneInfo("America/New_York")))
 
