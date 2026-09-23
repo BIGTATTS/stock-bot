@@ -369,27 +369,34 @@ async def check_sec_filings(context: ContextTypes.DEFAULT_TYPE):
     conn = get_conn()
     tickers = conn.execute("SELECT DISTINCT ticker FROM watchlist").fetchall()
     for (ticker,) in tickers:
-        filings = get_recent_filings(ticker, limit=1)
+        filings = get_recent_filings(ticker, limit=5)
         if not filings:
             continue
-        latest = filings[0]
         seen = conn.execute("SELECT accession FROM sec_seen WHERE ticker=?", (ticker,)).fetchone()
         if seen is None:
-            conn.execute("INSERT INTO sec_seen VALUES (?, ?)", (ticker, latest["accession"]))
+            conn.execute("INSERT INTO sec_seen VALUES (?, ?)", (ticker, filings[0]["accession"]))
             conn.commit()
             continue
-        if seen[0] != latest["accession"]:
-            conn.execute(
-                "UPDATE sec_seen SET accession=? WHERE ticker=?", (latest["accession"], ticker)
-            )
-            conn.commit()
-            chat_ids = conn.execute(
-                "SELECT chat_id FROM watchlist WHERE ticker=?", (ticker,)
-            ).fetchall()
+        new_filings = []
+        for f in filings:
+            if f["accession"] == seen[0]:
+                break
+            new_filings.append(f)
+        if not new_filings:
+            continue
+        conn.execute(
+            "UPDATE sec_seen SET accession=? WHERE ticker=?", (filings[0]["accession"], ticker)
+        )
+        conn.commit()
+        chat_ids = conn.execute(
+            "SELECT chat_id FROM watchlist WHERE ticker=?", (ticker,)
+        ).fetchall()
+        for f in reversed(new_filings):
+            flag = "\U0001F6A8 Insider transaction: " if f["form"] == "4" else "New SEC filing: "
             for (chat_id,) in chat_ids:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"New SEC filing: {ticker} filed a {latest['form']} on {latest['date']}\n{latest['link']}"
+                    text=f"{flag}{ticker} filed a {f['form']} on {f['date']}\n{f['link']}"
                 )
     conn.close()
 
