@@ -218,16 +218,19 @@ async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage: /unwatch TICKER")
+        await update.message.reply_text("Usage: /unwatch TICKER [TICKER2 TICKER3 ...]")
         return
-    ticker = context.args[0].upper()
     chat_id = update.effective_chat.id
     conn = get_conn()
-    conn.execute("DELETE FROM watchlist WHERE chat_id=? AND ticker=?", (chat_id, ticker))
+    removed = []
+    for raw in context.args:
+        ticker = raw.upper()
+        conn.execute("DELETE FROM watchlist WHERE chat_id=? AND ticker=?", (chat_id, ticker))
+        conn.execute("DELETE FROM pct_alerts WHERE chat_id=? AND ticker=?", (chat_id, ticker))
+        removed.append(ticker)
     conn.commit()
     conn.close()
-    await update.message.reply_text(f"Removed {ticker} from your watchlist.")
-
+    await update.message.reply_text(f"Removed: {', '.join(removed)}")
 async def list_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     conn = get_conn()
