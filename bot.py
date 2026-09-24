@@ -445,6 +445,19 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def heartbeat_job(context: ContextTypes.DEFAULT_TYPE):
     send_heartbeat("stock-bot")
+
+async def startup_notification(context: ContextTypes.DEFAULT_TYPE):
+    owner_id = os.environ.get("OWNER_CHAT_ID")
+    if not owner_id:
+        return
+    try:
+        await context.bot.send_message(
+            chat_id=int(owner_id),
+            text="\u2705 stock-bot just started up"
+        )
+    except Exception:
+        pass
+
 app = Application.builder().token(os.environ["BOT_TOKEN"]).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("price", price))
@@ -458,6 +471,7 @@ app.add_handler(CommandHandler("alerts", list_alerts))
 app.add_handler(CommandHandler("news", news))
 app.add_handler(CommandHandler("status", status))
 
+app.job_queue.run_once(startup_notification, when=3)
 app.job_queue.run_repeating(check_alerts, interval=300, first=10)
 app.job_queue.run_repeating(heartbeat_job, interval=120, first=5)
 app.job_queue.run_repeating(check_pct_alerts, interval=300, first=15)
